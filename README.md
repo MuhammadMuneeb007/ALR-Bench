@@ -1,4 +1,5 @@
 # ALR-Bench
+<img width="2176" height="2225" alt="Flowchart" src="https://github.com/user-attachments/assets/b2d7e1e2-e84f-46a3-8f4f-fabce56b075f" />
 
 **Benchmarking AI-Assisted Scientific Literature-Review Reproduction from Full-Text Evidence**
 
