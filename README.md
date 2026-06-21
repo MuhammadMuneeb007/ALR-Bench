@@ -1,371 +1,493 @@
-# Project34-ALR FinalCode Pipeline
+# ALR-Bench
 
-This repository implements an automated literature-review pipeline. The pipeline begins with known review articles, uses those reviews to define review-specific search and screening configurations, searches for candidate primary articles, ranks candidates, downloads and converts full text, extracts structured evidence cards with an LLM, synthesizes theme-level evidence, generates a review article, and evaluates the generated output.
+**Benchmarking AI-Assisted Scientific Literature-Review Reproduction from Full-Text Evidence**
 
-In simple terms, what we did is:
+ALR-Bench is a full-text benchmark and end-to-end pipeline for evaluating how well an AI-assisted
+workflow can *reproduce* a published literature review — from search and ranking through full-text
+retrieval, evidence extraction, synthesis, and generated-article comparison.
 
-1. Downloaded review articles for the evaluation dataset.
-2. Converted those review articles into Markdown and structured project folders.
-3. Extracted metadata, references, and dataset statistics from the review articles.
-4. Generated one review configuration per project.
-5. Searched literature databases using each configuration.
-6. Cleaned and deduplicated retrieved candidate articles.
-7. Ranked candidate articles using several abstract/title strategies.
-8. Downloaded full text for top candidates.
-9. Converted PDFs/full text into searchable text.
-10. Re-ranked candidates using full-text-aware strategies.
-11. Used an LLM to create structured evidence cards for top-ranked articles.
-12. Built canonical counts, themes, article-theme assignments, evidence packs, and synthesis briefs.
-13. Generated article sections, tables, figures, references, validation reports, and PDF output.
-14. Evaluated generated outputs against reference material.
+It does **not** attempt fully autonomous systematic reviewing. Instead, it uses completed,
+open-access review articles as evaluation anchors and measures each stage of the pipeline
+separately, so the strengths and failure modes of review automation are made explicit.
 
-Run commands from this folder:
+- **Code & benchmark:** https://github.com/MuhammadMuneeb007/ALR-Bench
+- **Generated review PDFs:** https://github.com/MuhammadMuneeb007/ALR-Bench/tree/main/GeneratedArticles
+- **Exploratory biomedical application (LitVarAI):** https://github.com/MuhammadMuneeb007/LitVarAI
 
-```bash
-cd FinalCode
+---
+
+## Table of Contents
+
+- [What this pipeline does](#what-this-pipeline-does)
+- [Pipeline overview (flowchart)](#pipeline-overview-flowchart)
+- [Headline results](#headline-results)
+- [Repository layout](#repository-layout)
+- [Quick start](#quick-start)
+- [The pipeline, stage by stage](#the-pipeline-stage-by-stage)
+- [Complete script inventory](#complete-script-inventory)
+- [Detailed results](#detailed-results)
+- [LLM configuration](#llm-configuration)
+- [Wording rules (important)](#wording-rules-important)
+- [Troubleshooting](#troubleshooting)
+- [Reproduction status](#reproduction-status)
+- [Citation](#citation)
+- [Responsible use & licensing](#responsible-use--licensing)
+
+---
+
+## What this pipeline does
+
+Starting from a set of known review articles, ALR-Bench:
+
+1. Builds an evaluation dataset of open-access review articles.
+2. Converts each review into Markdown and a structured project folder.
+3. Extracts metadata, reference lists, and gold DOI targets from each review.
+4. Generates one **review-specific configuration** per project (objective, concepts, eligibility, search terms).
+5. Searches multiple bibliographic databases using that configuration.
+6. Cleans and deduplicates the retrieved candidate articles.
+7. Ranks candidates with ten **abstract/title** strategies.
+8. Downloads and converts full text for the top candidates.
+9. Re-ranks candidates with ten **full-text-aware** strategies.
+10. Uses an LLM to build structured **evidence cards** for the top-ranked articles.
+11. Synthesizes themes and generates a complete **review-article package** (LaTeX → PDF).
+12. Evaluates the generated review against the original source review.
+
+The gold DOI reference list of each source review is used **only for evaluation**. It is never
+supplied to configuration generation, ranking, evidence-card synthesis, or article writing.
+
+---
+
+## Pipeline overview (flowchart)
+
+Your figure (adjust the path if it lives elsewhere in the repo):
+
+![ALR-Bench pipeline](Images/Flowchart.jpg)
+
+A native Mermaid version (renders directly on GitHub, no image file required):
+
+```mermaid
+flowchart TD
+    A[Dataset construction<br/>Download + structure source reviews] --> B[Reference-target construction<br/>OpenAlex → DOI gold targets]
+    A --> C[Review configuration<br/>PRISMA / PRISMA-S-inspired config.json]
+    C --> D[Bibliographic search<br/>OpenAlex · Crossref · Europe PMC · PubMed · Semantic Scholar]
+    D --> E[Cleaning & retrievable ceiling]
+    E --> F[Abstract-level ranking<br/>10 strategies → top 1,000 / review]
+    F --> G[Full-text retrieval & conversion<br/>PDF → machine-readable text]
+    G --> H[Full-text-aware reranking<br/>10 strategies → top 200 / review]
+    H --> I[LLM evidence-card synthesis<br/>structured article-level records]
+    I --> J[Theme synthesis & article generation<br/>LaTeX review package → PDF]
+    J --> K[Final evaluation<br/>lexical · semantic · citation · composite]
+    B -. evaluation only .-> F
+    B -. evaluation only .-> H
+    B -. evaluation only .-> K
 ```
 
-## Current Stats
+---
 
-These values were read from the current local workspace. Where information is not available yet, the README uses `TODO`.
+## Headline results
 
-| Metric | Current value | Source / note |
-|---|---:|---|
-| Review projects found | 14 | `Projects/*`, excluding shared `Projects/Search` and `Projects/Rankings` |
-| Step16 article evidence cards found | 1,918 | `Projects/*/Extractions/Step16_*/article_json/*.json` |
-| Included cards | 1,631 | `final_decision == include` |
-| Excluded cards | 210 | `final_decision == exclude` |
-| Uncertain cards | 77 | `final_decision == uncertain` |
-| Cards with full text | 1,884 | `has_fulltext == 1` |
-| Projects with final canonical truth file | 1 | `FinalArticle/project_truth.json`; TODO: run Step18.1 for remaining projects |
-| Empty placeholder scripts | 4 | TODO: implement/remove `Step11.1`, `Step15`, `Step18.1-CombineInformation`, `Step9-FinalRankingChecking` |
+> Results below are the **complete benchmark** as reported in the paper (14 reviews, all stages finished).
+> See [Reproduction status](#reproduction-status) for how to regenerate them and how to read the
+> `project_truth.json` canonical counts.
 
-## Completed Project Example
+| Stage | Key result |
+|---|---|
+| **Benchmark** | 14 open-access source reviews · 8 topic groups · 2018–2024 · 373 PDF pages · 194,963 words |
+| **Reference targets** | 1,348 OpenAlex referenced works → 1,197 DOI targets identified → **1,177 accessible** |
+| **Configuration grounding** | 818 / 1,045 configured terms matched source text = **78.3% coverage** |
+| **Search** | 761 unique queries · 2,040 query–database runs · **140,261 records** · 82,255 unique candidates |
+| **Retrievable ceiling** | **889** DOI targets theoretically recoverable |
+| **Abstract ranking** | best = SciBERT-style; **378 / 411** ranked-pool matches by C@1000 (92.0%) |
+| **Full text** | 14,000 selected → **10,416 PDFs (74.4%)**; 10,426 usable text reps (74.47%) |
+| **Full-text reranking** | best = hybrid fusion; 68 @50 · 119 @100 · 177 @200 · 291 @500 (of 377 pool matches) |
+| **Evidence cards** | **2,800 processed** · 2,242 include · 450 exclude · 108 uncertain · 0 failed |
+| **Final evaluation** | TF–IDF 0.6996 · SBERT 0.7561 · WMD 0.8494 · light composite 0.3380 · heavy 0.4154 |
 
-The project below currently has `FinalArticle/project_truth.json`:
+**Interpretation:** generated reviews reproduce broad topical and semantic content
+(high TF–IDF / SBERT / WMD) far more than exact wording or citation sets (low ROUGE-L 0.0982,
+BLEU-4 0.0239, DOI-Jaccard 0.0160) — exactly what is expected from evidence-grounded synthesis
+rather than verbatim reconstruction.
 
-`a_survey_on_large_language_model_based_autonomous_agents`
+---
 
-| Canonical count | Value | Meaning |
-|---|---:|---|
-| Records downloaded | 5,271 | Database retrieval output |
-| Records after DOI/metadata cleaning | 4,962 | Cleaned candidate records |
-| Records ranked by abstract/title | 4,962 | Abstract/title ranking pool |
-| Top-ranked screening pool | 1,000 | Full-text-aware ranking pool; do **not** call these retrieved records |
-| LLM screening target | 200 | Top records sent to Step16 evidence-card generation |
-| Article cards generated | 200 | Step16 card count |
-| Cards used for synthesis | 187 | Included cards used in article package |
-| Included | 187 | Final decision include |
-| Excluded | 11 | Final decision exclude |
-| Uncertain | 2 | Final decision uncertain |
-| Cards with full text | 200 | Full text available in Step16 cards |
-| Cards without full text | 0 | Abstract/metadata-only cards |
+## Repository layout
 
-For all other projects, canonical counts are currently `TODO`. Run Step18.1 for each project to generate `FinalArticle/project_truth.json`.
+```
+ALR-Bench/
+├── README.md
+├── Images/
+│   └── Flowchart.jpg                  # pipeline figure
+├── GeneratedArticles/                 # compiled generated review PDFs
+├── Projects/                          # per-review working data (often gitignored)
+│   └── <project>/
+│       ├── article.md                 # source review as Markdown
+│       ├── article_metadata.json
+│       ├── references_gold.json        # gold DOI targets (evaluation only)
+│       ├── config.json                 # review-specific configuration
+│       ├── Search/                     # search + cleaning outputs
+│       ├── Extractions/Step16_*/article_json/*.json   # evidence cards
+│       └── FinalArticle/               # generated LaTeX package + project_truth.json
+├── Dataset1-7 *.py                    # dataset construction + configuration
+└── Step7-20 *.py                      # search → ranking → full text → synthesis → eval
+```
 
-## Step-by-Step Pipeline
+> **Note on script naming.** Dataset-building scripts are prefixed `Dataset…`; downstream
+> pipeline scripts are prefixed `Step…`. The "Step N" headings below are *conceptual pipeline
+> stages* and do not always equal the number in a filename.
 
-### Step 1: Download Review Articles
+---
 
-We first build the evaluation dataset by downloading known review articles. These review articles are the starting point for each project because each one defines a review topic and provides references that can be used as gold-standard evidence.
+## Quick start
 
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step1-DownloadResearchArticleForSystemEvaluation.py` | Downloads/collects review articles for system evaluation. | Review search settings/OpenAlex metadata | Downloaded review article records and files | `python Step1-DownloadResearchArticleForSystemEvaluation.py` |
-| `Step2-DownloadResearchArticle-Information.py` | Saves review-article information and dataset report metadata. | Downloaded review metadata | Dataset CSV/report files | `python Step2-DownloadResearchArticle-Information.py` |
+```bash
+# from the repository root (or the FinalCode/ subfolder if you keep one)
+pip install -r requirements.txt        # bibliographic APIs, PDF tools, embedding models, LaTeX deps
+cp .env.example .env                   # then add your LLM_API_KEY (see LLM configuration)
+```
 
-Important note: review articles should carry their OpenAlex `referenced_works` when available so the pipeline can later resolve cited works into DOI-based gold references.
+Then run the stages in order (details in the next section). A typical end-to-end run for a
+single project finishes with:
 
-### Step 2: Convert Review Articles To Markdown
+```bash
+python Step18.1-GenerateArticle.py 1 --max-cards 200 --max-table-rows 200 \
+    --included-only --generate 1 --max-themes 8 --force --compile 1 --progress-interval 10
+python Step20-Evaluate.py
+```
 
-After downloading review PDFs/articles, we convert them into Markdown so the pipeline can parse and inspect them consistently.
+---
 
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step3-ConvertArticlesToMarkdown.py` | Converts downloaded review articles into Markdown/project folders. | Downloaded PDFs/articles | `Projects/<project>/article.md` and metadata files | `python Step3-ConvertArticlesToMarkdown.py` |
+## The pipeline, stage by stage
 
-### Step 3: Structure Review Articles And References
+### Stage 1 — Dataset construction
 
-Next, we structure the review article content. This includes extracting metadata, reference sections, structured evidence, and gold-standard references when possible.
+Builds the evaluation set from known review articles and turns each into a structured project.
 
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step4-StructureArticles.py` | Builds structured evidence/reference packs from review articles. | Project Markdown and metadata | Structured evidence files and reference files | `python Step4-StructureArticles.py` |
+| Script | What it does | Output |
+|---|---|---|
+| `Dataset1-DownloadResearchArticleForSystemEvaluation.py` | Downloads/collects review articles for evaluation. | Review article records & files |
+| `Dataset2-DownloadResearchArticle-Information.py` | Saves review metadata and dataset-report info. | Dataset CSV / report files |
+| `Dataset3-ConvertArticlesToMarkdown.py` | Converts each review PDF into Markdown + project folder. | `Projects/<project>/article.md` |
+| `Dataset4-StructureArticles.py` | Builds structured evidence/reference packs and gold DOI lists. | `article_metadata.json`, `references_gold.json` |
+| `Dataset5-DatasetStatistics.py` | Prints dataset statistics and BibTeX/metadata info. | Console statistics |
 
-Expected important outputs:
+> Source reviews must carry their OpenAlex `referenced_works` so cited works can be resolved into
+> DOI-based gold targets used **only** for evaluation.
+
+### Stage 2 — Review configuration
+
+| Script | What it does | Output |
+|---|---|---|
+| `Dataset6-GenerateConfiguration.py` | Generates one flat `config.json` per project (objective, concepts, eligibility, search terms, screening/quality fields). | `Projects/<project>/config.json` |
+| `Dataset7-ValidateConfiguration.py` | Checks whether configured terms actually appear in the source-review text (grounding check). | Validation report |
+
+### Stage 3 — Bibliographic search, cleaning & retrievable ceiling
+
+| Script | What it does | Output |
+|---|---|---|
+| `Step7-SearchLiterature.py` | Searches configured databases (OpenAlex, Crossref, Europe PMC, PubMed, Semantic Scholar). | `Search/articles.csv` |
+| `Step8-Cleaning.py` | Deduplicates, filters DOI metadata, standardizes records. | `Search/articles_clean_doi_only.csv` |
+| `Step8.1-CalculateCeiling.py` | Computes the retrievable ceiling vs gold DOI targets. | Ceiling / diagnostic reports |
+| `Step8.2-PrintStatistics.py` | Prints search & cleaning statistics. | Console statistics |
+
+### Stage 4 — Abstract-level ranking
+
+Ranks candidates using title/abstract/metadata + configuration only (no full text).
+
+| # | Script | Strategy |
+|---:|---|---|
+| 1 | `Step9-Rank1-ConfigBM25.py` | Config-weighted BM25 / lexical baseline |
+| 2 | `Step9-Rank2-ReviewIntentSBERT.py` | Review-intent semantic / cross-encoder |
+| 3 | `Step9-Rank3-TitleObjectiveSentenceTransformer.py` | Title/objective semantic |
+| 4 | `Step9-Rank4-ConceptKeywordCoverage.py` | Concept & keyword coverage |
+| 5 | `Step9-Rank5-GeneratedQueryMatch.py` | Generated/reported query matching |
+| 6 | `Step9-Rank6-BooleanSoftMatch.py` | Boolean soft matching |
+| 7 | `Step9-Rank7-FieldWeightedLexical.py` | Field-weighted lexical |
+| 8 | `Step9-Rank8-SciBERTSemantic.py` | Scientific/biomedical semantic (**best overall**) |
+| 9 | `Step9-Rank9-SPECTER2Semantic.py` | SPECTER/SPECTER2 paper-level semantic |
+| 10 | `Step9-Rank10-HybridFusion.py` | Hybrid reciprocal-rank fusion |
+
+Reporting: `Step9-PrintRanking.py` (ranking tables) · `Step9-Diagnosis.py` (C@10–C@3000 diagnostics).
+The top **1,000** candidates per review are carried forward.
+
+### Stage 5 — Full-text retrieval & conversion
+
+| Script | What it does | Output |
+|---|---|---|
+| `Step11-DownloadFullText.py` | Downloads full text / PDFs for top candidates. | PDF / full-text files |
+| `Step12-PrintStatistics.py` | Prints full-text download statistics. | Console statistics |
+| `Step13-ConvertToFullText.py` | Converts PDFs/full text to machine-readable text. | `COMBINED.md` etc. |
+| `Step13.1-PrintConvertTextStatistics.py` | Prints conversion statistics. | Console statistics |
+
+### Stage 6 — Full-text-aware reranking
+
+Re-ranks the same 1,000-record pool, now using full text where available.
+
+| # | Script | Strategy |
+|---:|---|---|
+| 1 | `Step14-FullRank1-ConfigBM25.py` | Full-text config BM25 |
+| 2 | `Step14-FullRank2-ReviewIntentSBERT.py` | Full-text review-intent semantic |
+| 3 | `Step14-FullRank3-TitleObjectiveSentenceTransformer.py` | Full-text title/objective semantic |
+| 4 | `Step14-FullRank4-ConceptKeywordCoverage.py` | Full-text concept/keyword coverage |
+| 5 | `Step14-FullRank5-GeneratedQueryMatch.py` | Full-text generated-query matching |
+| 6 | `Step14-FullRank6-BooleanSoftMatch.py` | Full-text Boolean soft match |
+| 7 | `Step14-FullRank7-FieldWeightedLexical.py` | Full-text field-weighted lexical |
+| 8 | `Step14-FullRank8-SciBERTSemantic.py` | Full-text SciBERT/BGE semantic |
+| 9 | `Step14-FullRank9-SPECTER2Semantic.py` | Full-text SPECTER/SPECTER2 semantic |
+| 10 | `Step14-FullRank10-HybridFusion.py` | Full-text hybrid fusion (**best overall**) |
+
+Reporting: `Step14-PrintRanking.py` · `Step14-Diagnosis.py`.
+The top **200** articles per review are carried forward.
+
+### Stage 7 — LLM evidence-card synthesis
+
+| Script | What it does | Output |
+|---|---|---|
+| `Step16-Synthesis.py` | Builds structured article-level evidence cards from the top 200 full-text articles. | `Projects/<project>/Extractions/Step16_*/article_json/*.json` |
+
+Each card stores a screening decision (include / exclude / uncertain), confidence, methods,
+datasets, outcomes, metrics, numerical results, findings, limitations, and a short summary.
+
+### Stage 8 — Progress tracking, article generation, diagrams, evaluation
+
+| Script | What it does | Output |
+|---|---|---|
+| `Step17-ListProgress.py` | Lists per-project progress across stages. | Console |
+| `Step18.1-GenerateArticle.py` | Builds the full review package: canonical counts, themes, evidence packs, sections, references, validation reports, compiled PDF. | `FinalArticle/` |
+| `Step19-GenerateDiagrams.py` | Generates local diagrams / tables / JSON summaries. | Diagram & table files |
+| `Step20-Evaluate.py` | Compares generated PDFs against source-review PDFs with multiple metrics. | Evaluation tables |
+
+**Article generation examples**
+
+```bash
+# Fast rebuild without the LLM (structure + tables only)
+python Step18.1-GenerateArticle.py 1 --max-cards 200 --max-table-rows 200 \
+    --included-only --generate 0 --compile 0
+
+# Full generation with the LLM + PDF compile
+python Step18.1-GenerateArticle.py 1 --max-cards 200 --max-table-rows 200 \
+    --included-only --generate 1 --max-themes 8 --force --compile 1 --progress-interval 10
+```
+
+Key `FinalArticle/` outputs:
 
 | Output | Purpose |
 |---|---|
-| `article_metadata.json` | Carries title, DOI, year, and source metadata |
-| `references_gold.json` | Gold DOI list for cited works when available |
-| Structured article text files | Used by later configuration/statistics steps |
+| `Main.tex` / `Main.pdf` | Generated review source & compiled PDF |
+| `reference.bib` | DOI-enriched references |
+| `bibtex_doi_cache.json` | DOI→BibTeX cache (avoids repeat API calls) |
+| `project_truth.json` | Locked canonical counts for the project |
+| `review_theme_schema.json` | Canonical themes & theme count |
+| `article_theme_assignments.json` | Multi-theme article assignments |
+| `theme_evidence_packs.json` / `theme_synthesis_briefs.json` | Theme evidence & briefs |
+| `GeneratedTables.tex` | Deterministic flow diagram & descriptive tables |
+| `Reports/FINAL_*_report.json` | Citation, numeric-provenance, theme-consistency, count-wording, and compile validation |
 
-### Step 4: Print Dataset Statistics
+---
 
-Before generating configurations, we inspect the dataset to understand what we have.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step5-DatasetStatistics.py` | Prints dataset statistics and article BibTeX/metadata information. | `Projects/*` | Console statistics | `python Step5-DatasetStatistics.py` |
-
-This helps confirm how many review projects exist, how much metadata exists, and whether references/DOIs are available.
-
-### Step 5: Generate Review Configuration
-
-For each review article, the pipeline creates a flat configuration describing the review objective, research questions, keywords, inclusion criteria, exclusion criteria, databases, and quality/extraction questions.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step6.1-GenerateConfiguration.py` | Generates one flat `config.json` per review project. | Review article Markdown/metadata | `Projects/<project>/config.json` | `python Step6.1-GenerateConfiguration.py` |
-| `Step6.2-ValidateConfiguration.py` | Checks whether config terms appear in the review article text. | `config.json`, article text | Validation report/statistics | `python Step6.2-ValidateConfiguration.py` |
-
-The configuration is important because later search and ranking strategies use it as the review-specific intent.
-
-### Step 6: Search Literature Databases
-
-Using each `config.json`, we search literature databases for candidate articles related to the review topic.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step7-SearchLiterature.py` | Searches configured databases and saves candidate article metadata. | `Projects/<project>/config.json` | `Projects/<project>/Search/articles.csv` | `python Step7-SearchLiterature.py` |
-
-Search output can include records from sources such as OpenAlex, Crossref, Semantic Scholar, Europe PMC, and PubMed depending on the project configuration and available APIs.
-
-### Step 7: Clean Candidate Articles
-
-Raw search results contain duplicates, missing DOI records, and noisy metadata. We clean and standardize them before ranking.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step8-Cleaning.py` | Cleans retrieved metadata, removes duplicates, filters DOI metadata, and prints common references. | `Search/articles.csv` | `Search/articles_clean_doi_only.csv` | `python Step8-Cleaning.py` |
-| `Step8.1-CalculateCeiling.py` | Computes the retrievable ceiling against gold DOI references. | Cleaned candidates and gold references | Ceiling/diagnostic reports | `python Step8.1-CalculateCeiling.py` |
-
-The ceiling step tells us the maximum possible recall if the candidate pool does not contain all gold references.
-
-### Step 8: Rank Candidates Using Abstract/Title Metadata
-
-We then rank candidate articles using multiple strategies. These are metadata-based rankings that rely mostly on title, abstract, keywords, source metadata, and the review configuration.
-
-| Strategy | Script | What it does | Instruction |
-|---:|---|---|---|
-| 1 | `Step9-Rank1-ConfigBM25.py` | Config-weighted BM25 / lexical baseline. | `python Step9-Rank1-ConfigBM25.py` |
-| 2 | `Step9-Rank2-ReviewIntentSBERT.py` | Review-intent semantic/cross-encoder ranking. | `python Step9-Rank2-ReviewIntentSBERT.py --force` |
-| 3 | `Step9-Rank3-TitleObjectiveSentenceTransformer.py` | Title/objective semantic ranking. | `python Step9-Rank3-TitleObjectiveSentenceTransformer.py --force` |
-| 4 | `Step9-Rank4-ConceptKeywordCoverage.py` | Concept and keyword phrase coverage. | `python Step9-Rank4-ConceptKeywordCoverage.py` |
-| 5 | `Step9-Rank5-GeneratedQueryMatch.py` | Generated/reported query matching. | `python Step9-Rank5-GeneratedQueryMatch.py` |
-| 6 | `Step9-Rank6-BooleanSoftMatch.py` | Boolean-style soft matching. | `python Step9-Rank6-BooleanSoftMatch.py` |
-| 7 | `Step9-Rank7-FieldWeightedLexical.py` | Field-weighted lexical ranking. | `python Step9-Rank7-FieldWeightedLexical.py` |
-| 8 | `Step9-Rank8-SciBERTSemantic.py` | Scientific/biomedical semantic ranking. | `python Step9-Rank8-SciBERTSemantic.py` |
-| 9 | `Step9-Rank9-SPECTER2Semantic.py` | SPECTER/SPECTER2 paper-level semantic ranking. | `python Step9-Rank9-SPECTER2Semantic.py` |
-| 10 | `Step9-Rank10-HybridFusion.py` | Hybrid fusion of ranking strategies. | `python Step9-Rank10-HybridFusion.py` |
-| Final | `Step9-FinalRanking.py` | Final metadata ranking and DOI-match reporting. | `python Step9-FinalRanking.py` |
-
-Helpful reporting scripts:
-
-| Script | What it does | Instruction |
-|---|---|---|
-| `Step9-PrintRanking.py` | Prints ranking tables for Step9 strategies. | `python Step9-PrintRanking.py` |
-| `Step9-Diagnosis.py` | Prints deeper ranking diagnostics such as C@10 through C@3000. | `python Step9-Diagnosis.py` |
-
-### Step 9: Download Full Text
-
-After metadata ranking, the pipeline downloads full text/PDFs for top candidate articles.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step11-DownloadFullText.py` | Downloads full text and PDFs for candidate articles. | Ranked candidate files | Full-text/PDF files under project/database folders | `python Step11-DownloadFullText.py` |
-| `Step12-PrintStatistics.py` | Prints full-text download statistics. | Downloaded files | Console statistics | `python Step12-PrintStatistics.py` |
-
-### Step 10: Convert Downloaded Full Text
-
-Downloaded PDFs/full-text files are converted into text so ranking and LLM extraction can use them.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step13-ConvertToFullText.py` | Converts PDFs/full text into text/Markdown. | Downloaded PDFs/full text | Converted text files such as `COMBINED.md` | `python Step13-ConvertToFullText.py` |
-| `Step13.1-PrintConvertTextStatistics.py` | Prints conversion statistics. | Converted text files | Console statistics | `python Step13.1-PrintConvertTextStatistics.py` |
-
-### Step 11: Full-Text-Aware Ranking
-
-The pipeline then re-ranks candidates using full text where available. If full text is missing, metadata/title/abstract fallback can be used.
-
-| Strategy | Script | What it does | Instruction |
-|---:|---|---|---|
-| 1 | `Step14-FullRank1-ConfigBM25.py` | Full-text-aware config BM25 ranking. | `python Step14-FullRank1-ConfigBM25.py` |
-| 2 | `Step14-FullRank2-ReviewIntentSBERT.py` | Full-text-aware review-intent semantic ranking. | `python Step14-FullRank2-ReviewIntentSBERT.py` |
-| 3 | `Step14-FullRank3-TitleObjectiveSentenceTransformer.py` | Full-text-aware title/objective semantic ranking. | `python Step14-FullRank3-TitleObjectiveSentenceTransformer.py` |
-| 4 | `Step14-FullRank4-ConceptKeywordCoverage.py` | Full-text-aware concept/keyword coverage ranking. | `python Step14-FullRank4-ConceptKeywordCoverage.py` |
-| 5 | `Step14-FullRank5-GeneratedQueryMatch.py` | Full-text-aware generated query matching. | `python Step14-FullRank5-GeneratedQueryMatch.py` |
-| 6 | `Step14-FullRank6-BooleanSoftMatch.py` | Full-text-aware Boolean soft-match ranking. | `python Step14-FullRank6-BooleanSoftMatch.py` |
-| 7 | `Step14-FullRank7-FieldWeightedLexical.py` | Full-text-aware field-weighted lexical ranking. | `python Step14-FullRank7-FieldWeightedLexical.py` |
-| 8 | `Step14-FullRank8-SciBERTSemantic.py` | Full-text-aware SciBERT/BGE-style semantic ranking. | `python Step14-FullRank8-SciBERTSemantic.py` |
-| 9 | `Step14-FullRank9-SPECTER2Semantic.py` | Full-text-aware SPECTER/SPECTER2 semantic ranking. | `python Step14-FullRank9-SPECTER2Semantic.py` |
-| 10 | `Step14-FullRank10-HybridFusion.py` | Hybrid fusion of full-text rankings. | `python Step14-FullRank10-HybridFusion.py` |
-
-Helpful reporting scripts:
-
-| Script | What it does | Instruction |
-|---|---|---|
-| `Step14-PrintRanking.py` | Prints full ranking performance at C@10 to C@1000. | `python Step14-PrintRanking.py` |
-| `Step14-PrintEachFullRankingTable.py` | Prints one table per full-text ranking strategy. | `python Step14-PrintEachFullRankingTable.py` |
-
-### Step 12: Generate LLM Evidence Cards
-
-The top-ranked articles are passed to an LLM to create structured article evidence cards. These cards are the core synthesis unit for the generated review article.
-
-| Script | What it does | Input | Output | Instruction |
-|---|---|---|---|---|
-| `Step16-Synthesis.py` | Generates structured evidence cards from top-ranked full-text articles. | Full-text ranking CSVs and full text | `Projects/<project>/Extractions/Step16_*/article_json/*.json` | `python Step16-Synthesis.py` |
-| `TestingLLM.py` | Experimental/config-driven LLM eligibility and extraction script. | Full-rank top candidates | LLM quality/ranking outputs | `python TestingLLM.py --help` |
-
-Current evidence-card totals:
-
-| Decision | Count |
-|---|---:|
-| Include | 1,631 |
-| Exclude | 210 |
-| Uncertain | 77 |
-| Total | 1,918 |
-
-### Step 13: Track Progress
-
-Use this to quickly see what projects are complete or missing outputs.
-
-| Script | What it does | Instruction |
-|---|---|---|
-| `Step17-ListProgress.py` | Lists progress across extraction and article-generation stages. | `python Step17-ListProgress.py` |
-
-### Step 14: Generate Final Review Article
-
-`Step18.1-GenerateArticle.py` builds the final article package. It creates canonical counts, a canonical theme schema, article-theme assignments, evidence packs, synthesis briefs, section prompts, article sections, references, validation reports, and optionally compiles the PDF.
-
-Fast rebuild without LLM:
-
-```bash
-python Step18.1-GenerateArticle.py 1 --max-cards 200 --max-table-rows 200 --included-only --generate 0 --compile 0
-```
-
-Full generation with DeepSeek/LLM:
-
-```bash
-python Step18.1-GenerateArticle.py 1 --max-cards 200 --max-table-rows 200 --included-only --generate 1 --max-themes 8 --force --compile 1 --progress-interval 10
-```
-
-Key outputs:
-
-| Output | Purpose |
-|---|---|
-| `FinalArticle/Main.tex` | Main article source |
-| `FinalArticle/Main.pdf` | Compiled article PDF when `--compile 1` |
-| `FinalArticle/reference.bib` | DOI-enriched references |
-| `FinalArticle/bibtex_doi_cache.json` | DOI-to-BibTeX cache to avoid repeated API calls |
-| `FinalArticle/project_truth.json` | Locked canonical counts |
-| `FinalArticle/review_theme_schema.json` | Canonical theme schema and number of themes |
-| `FinalArticle/article_theme_assignments.json` | Multi-theme article assignments |
-| `FinalArticle/theme_evidence_packs.json` | Evidence grouped by canonical themes |
-| `FinalArticle/theme_synthesis_briefs.json` | Per-theme synthesis briefs |
-| `FinalArticle/GeneratedTables.tex` | Deterministic flow diagram and descriptive tables |
-| `FinalArticle/Reports/FINAL_citation_report.json` | Citation validation |
-| `FinalArticle/Reports/FINAL_numeric_provenance_report.json` | Numeric provenance validation |
-| `FinalArticle/Reports/FINAL_theme_consistency_report.json` | Theme consistency validation |
-| `FinalArticle/Reports/FINAL_count_wording_report.json` | Count/wording validation |
-| `FinalArticle/Reports/FINAL_compile_report.json` | PDF compile log summary |
-
-### Step 15: Generate Diagrams
-
-This script generates local diagrams, tables, and summaries for projects.
-
-| Script | What it does | Instruction |
-|---|---|---|
-| `Step19-GenerateDiagrams.py` | Generates local diagrams/tables/JSON summaries. | `python Step19-GenerateDiagrams.py 1` |
-
-### Step 16: Evaluate Generated Output
-
-Finally, generated PDFs/articles can be compared against reference articles using multiple text-similarity metrics.
-
-| Script | What it does | Instruction |
-|---|---|---|
-| `Step20-Evaluate.py` | Evaluates generated PDFs/articles against benchmark/reference PDFs. | `python Step20-Evaluate.py` |
-
-Example metric families include exact match, Levenshtein similarity, Jaccard similarity, TF-IDF cosine similarity, ROUGE, BLEU, METEOR, BERTScore, SBERT similarity, WMD similarity, and entailment-style scores.
-
-## Script Inventory
+## Complete script inventory
 
 | File | Role | Status |
 |---|---|---|
-| `Step1-DownloadResearchArticleForSystemEvaluation.py` | Download review articles for evaluation. | Active |
-| `Step2-DownloadResearchArticle-Information.py` | Save review metadata/report information. | Active |
-| `Step3-ConvertArticlesToMarkdown.py` | Convert review articles to Markdown/project files. | Active |
-| `Step4-StructureArticles.py` | Structure review article content and references. | Active |
-| `Step5-DatasetStatistics.py` | Print dataset statistics and BibTeX/metadata info. | Active |
-| `Step6.1-GenerateConfiguration.py` | Generate review configuration. | Active |
-| `Step6.2-ValidateConfiguration.py` | Validate generated configuration. | Active |
-| `Step7-SearchLiterature.py` | Search candidate literature. | Active |
-| `Step8-Cleaning.py` | Clean/deduplicate candidate metadata. | Active |
-| `Step8.1-CalculateCeiling.py` | Compute retrievable ceiling. | Active |
-| `Step9-Rank*.py` | Abstract/title ranking strategies. | Active |
-| `Step9-FinalRanking.py` | Final metadata ranking. | Active |
-| `Step9-PrintRanking.py` | Print Step9 ranking tables. | Active |
-| `Step11-DownloadFullText.py` | Download full text/PDFs. | Active |
-| `Step12-PrintStatistics.py` | Print full-text statistics. | Active |
-| `Step13-ConvertToFullText.py` | Convert full text/PDFs to text. | Active |
-| `Step13.1-PrintConvertTextStatistics.py` | Print conversion statistics. | Active |
-| `Step14-FullRank*.py` | Full-text-aware ranking strategies. | Active |
-| `Step14-PrintRanking.py` | Print full-text ranking summary. | Active |
-| `Step16-Synthesis.py` | Generate LLM evidence cards. | Active |
-| `Step17-ListProgress.py` | List pipeline progress. | Active |
-| `Step18.1-GenerateArticle.py` | Generate final review article package. | Active |
-| `Step19-GenerateDiagrams.py` | Generate diagrams/tables. | Active |
-| `Step20-Evaluate.py` | Evaluate generated outputs. | Active |
-| `TestingLLM.py` | Experimental LLM extraction/eligibility script. | Active/experimental |
-| `Step11.1-DownloadTest.py` | Empty. | TODO |
-| `Step15-FullTextSummary.py` | Empty. | TODO |
-| `Step18.1-CombineInformation.py` | Empty. | TODO |
-| `Step9-FinalRankingChecking.py` | Empty. | TODO |
-| `Step18.1-GenerateArticle copy.py` | Duplicate/backup. | TODO: archive or remove |
+| `Dataset1-DownloadResearchArticleForSystemEvaluation.py` | Download review articles for evaluation | Active |
+| `Dataset2-DownloadResearchArticle-Information.py` | Save review metadata / report info | Active |
+| `Dataset3-ConvertArticlesToMarkdown.py` | Convert reviews to Markdown / project files | Active |
+| `Dataset4-StructureArticles.py` | Structure review content & references | Active |
+| `Dataset5-DatasetStatistics.py` | Print dataset statistics | Active |
+| `Dataset6-GenerateConfiguration.py` | Generate review configuration | Active |
+| `Dataset7-ValidateConfiguration.py` | Validate generated configuration | Active |
+| `Step7-SearchLiterature.py` | Search candidate literature | Active |
+| `Step8-Cleaning.py` | Clean / deduplicate candidates | Active |
+| `Step8.1-CalculateCeiling.py` | Compute retrievable ceiling | Active |
+| `Step8.2-PrintStatistics.py` | Print search statistics | Active |
+| `Step9-Rank1…Rank10-*.py` | Abstract/title ranking strategies (10) | Active |
+| `Step9-PrintRanking.py` | Print Step9 ranking tables | Active |
+| `Step9-Diagnosis.py` | Step9 C@K diagnostics | Active |
+| `Step11-DownloadFullText.py` | Download full text / PDFs | Active |
+| `Step12-PrintStatistics.py` | Print full-text statistics | Active |
+| `Step13-ConvertToFullText.py` | Convert full text / PDFs to text | Active |
+| `Step13.1-PrintConvertTextStatistics.py` | Print conversion statistics | Active |
+| `Step14-FullRank1…FullRank10-*.py` | Full-text-aware ranking strategies (10) | Active |
+| `Step14-PrintRanking.py` | Print full-text ranking summary | Active |
+| `Step14-Diagnosis.py` | Full-text ranking diagnostics | Active |
+| `Step16-Synthesis.py` | Generate LLM evidence cards | Active — **confirm committed** |
+| `Step17-ListProgress.py` | List pipeline progress | Active |
+| `Step18.1-GenerateArticle.py` | Generate final review package | Active |
+| `Step19-GenerateDiagrams.py` | Generate diagrams / tables | Active |
+| `Step20-Evaluate.py` | Evaluate generated outputs | Active |
 
-## Important Wording Rules
+> **Cleanup TODO (from the old README):** archive/remove any empty placeholder scripts
+> (`Step11.1-DownloadTest.py`, `Step15-FullTextSummary.py`, `Step18.1-CombineInformation.py`,
+> `Step9-FinalRankingChecking.py`) and the backup `Step18.1-GenerateArticle copy.py` so the
+> repository contains only working, documented files.
 
-| Use this wording | Avoid this wording |
+---
+
+## Detailed results
+
+### Dataset
+
+| Component | Value |
 |---|---|
-| `5,271 records were downloaded/retrieved from configured databases` | `1,000 records were retrieved` |
-| `1,000 records formed the top-ranked screening pool` | Treating top-1000 as original retrieval count |
-| `evidence-card completeness and extraction audit` | `quality assessment`, unless formal quality scores exist |
-| `studies may belong to multiple themes` | Treating theme counts as mutually exclusive when multi-assignment is enabled |
+| Source reviews | 14 open-access review articles |
+| Topic groups | 8 (bioinformatics, code generation, education, LLM evaluation, ML, psychology, public health, social science) |
+| Publication years | 2018–2024 |
+| Total PDF pages / words | 373 / 194,963 |
+| OpenAlex referenced works | 1,348 |
+| DOI targets identified | 1,197 |
+| Accessible DOI targets (evaluation set) | 1,177 |
+| Mean accessible targets / review | 84.1 |
 
-## LLM Configuration
+### Configuration grounding
 
-`Step18.1-GenerateArticle.py` reads `.env` automatically.
+| Group | Found / Total | Coverage |
+|---|---|---|
+| Concept terms | 167 / 170 | 98.2% |
+| Reported search terms | 172 / 186 | 92.5% |
+| Generated search terms | 142 / 179 | 79.3% |
+| Generated abstract-screening terms | 127 / 146 | 87.0% |
+| Generated full-text-screening terms | 113 / 125 | 90.4% |
+| **Overall** | **818 / 1,045** | **78.3%** |
+
+### Search & retrievable ceiling
+
+| Component | Value |
+|---|---|
+| Unique query texts | 761 |
+| Query–database runs (success / fail / zero) | 2,040 (1,752 / 288 / 418) |
+| Returned records | 140,261 |
+| Unique candidates (with DOI) | 82,255 (79,068) |
+| Retrievable ceiling | 889 (75.5% of accessible DOI targets) |
+
+### Ranking (DOI reference recovery)
+
+| Stage | Best strategy | Key C@K |
+|---|---|---|
+| Abstract-level (411 pool matches) | SciBERT-style | 378 @1000 (92.0%); title-objective 409 @3000 |
+| Full-text-aware (377 pool matches) | Hybrid fusion | 68 @50 · 119 @100 · 177 @200 · 291 @500 |
+
+### Full text & evidence cards
+
+| Component | Value |
+|---|---|
+| Selected candidates | 14,000 |
+| Valid PDFs retrieved | 10,416 (74.4%) |
+| Usable machine-readable text | 10,426 (74.47%) |
+| Evidence cards processed | 2,800 (0 failed) |
+| Include / Exclude / Uncertain | 2,242 / 450 / 108 |
+
+### Final generated-review evaluation (means over 14 reviews)
+
+| Metric | Mean |
+|---|---|
+| TF–IDF cosine | 0.6996 |
+| SBERT similarity | 0.7561 |
+| Word Mover's Distance | 0.8494 |
+| BERTScore F1 | 0.3843 |
+| ROUGE-L | 0.0982 |
+| BLEU-4 | 0.0239 |
+| Citation DOI Jaccard | 0.0160 |
+| Light composite | 0.3380 |
+| Heavy composite | 0.4154 |
+
+### Exploratory application — LitVarAI (telomere-gene variant extraction)
+
+A downstream demonstration of the same full-text evidence-mining components on biomedical
+literature. **Exploratory only — not part of the primary benchmark.**
+
+| Component | Value |
+|---|---|
+| Target genes | 13 telomere / telomerase-associated |
+| ClinVar variant records / unique PMIDs | 7,519 / 664 |
+| Gene-specific articles (with DOI) | 730 (640) |
+| Full-text retrieved & converted | 617 |
+| Articles with AI extraction response | 543 |
+| Articles with ≥1 extracted variant | 342 |
+| Variant rows / unique variants | 2,181 / 1,329 |
+| Provisional / strict-concordant ClinVar matches | 194 / 183 |
+
+> The `POT1` gene run is incomplete (PDFs converted but no AI response recorded) and should be
+> rerun before this application is used as a gene-level benchmark.
+
+---
+
+## LLM configuration
+
+`Step18.1-GenerateArticle.py` and `Step16-Synthesis.py` read `.env` automatically.
 
 | Variable | Purpose |
 |---|---|
 | `LLM_PROVIDER` | Provider label, e.g. `deepseek` |
 | `LLM_BASE_URL` | OpenAI-compatible base URL |
 | `LLM_MODEL` | Model name |
-| `LLM_API_KEY` | API key; do not commit this |
-| `LLM_TEMPERATURE` | Temperature |
-| `LLM_TOP_P` | Top-p sampling |
-| `LLM_MAX_TOKENS` | Max output tokens |
+| `LLM_API_KEY` | API key — **never commit this** |
+| `LLM_TEMPERATURE` / `LLM_TOP_P` / `LLM_MAX_TOKENS` | Sampling & length controls |
 | `LLM_REASONING_EFFORT` | Optional provider-specific setting |
-| `PROGRESS_INTERVAL` | Heartbeat interval for DOI/LLM waits |
+| `PROGRESS_INTERVAL` | Heartbeat interval for DOI / LLM waits |
+
+---
+
+## Wording rules (important)
+
+To keep generated text and documentation faithful to the pipeline:
+
+| Use this | Avoid this |
+|---|---|
+| "*N* records were retrieved from configured databases" (e.g. 5,271 for one project) | "1,000 records were retrieved" |
+| "1,000 records formed the top-ranked screening pool" | treating top-1,000 as the original retrieval count |
+| "evidence-card completeness and extraction audit" | "quality assessment" (unless formal quality scores exist) |
+| "studies may belong to multiple themes" | treating theme counts as mutually exclusive when multi-assignment is on |
+
+---
 
 ## Troubleshooting
 
 | Problem | Likely cause | Fix |
 |---|---|---|
-| References do not appear in PDF | BibTeX was not run after first LaTeX pass | Run `pdflatex Main.tex`, `bibtex Main`, `pdflatex Main.tex`, `pdflatex Main.tex` |
-| Citations show as `?` | Invalid cite keys or stale `.bbl` | Check `Reports/FINAL_citation_report.json` and recompile |
-| Step18.1 seems stuck | DOI lookup or LLM request is running | Use `--progress-interval 10`; DOI cache is saved in `bibtex_doi_cache.json` |
-| Numeric report has many unknown numbers | Generated text includes numbers not found in truth/cards/theme packs | Check `Reports/FINAL_numeric_provenance_report.json` |
-| Theme counts exceed included count | Multi-theme assignment is enabled | This is expected; include the multi-assignment disclaimer |
-| LLM key missing | `.env` not loaded or key not set | Add `LLM_API_KEY` to `.env` or pass `--llm-api-key` |
+| References missing from PDF | BibTeX not run after first LaTeX pass | `pdflatex Main` → `bibtex Main` → `pdflatex Main` → `pdflatex Main` |
+| Citations show as `?` | Invalid cite keys or stale `.bbl` | Check `Reports/FINAL_citation_report.json`; recompile |
+| `Step18.1` seems stuck | DOI lookup or LLM request running | Use `--progress-interval 10`; cache is in `bibtex_doi_cache.json` |
+| Numeric report has unknown numbers | Generated text contains numbers not in truth/cards | Check `Reports/FINAL_numeric_provenance_report.json` |
+| Theme counts exceed included count | Multi-theme assignment enabled | Expected — keep the multi-assignment disclaimer |
+| LLM key missing | `.env` not loaded | Add `LLM_API_KEY` to `.env` or pass `--llm-api-key` |
 
-## Remaining TODOs
+---
 
-| TODO | Why it matters |
-|---|---|
-| Run Step18.1 for all 14 projects | Creates canonical truth, themes, reports, and PDFs for every project |
-| Review empty placeholder scripts | Avoid confusion and dead files |
-| Archive/remove `Step18.1-GenerateArticle copy.py` | Prevent editing the wrong article generator |
-| Run Step20 after final PDFs are built | Produces final evaluation metrics |
+## Reproduction status
 
+Canonical per-project counts are locked in `Projects/<project>/FinalArticle/project_truth.json`,
+produced by `Step18.1-GenerateArticle.py`. To reproduce the full benchmark:
+
+1. Run Stages 1–8 for all 14 projects.
+2. Run `Step18.1-GenerateArticle.py` per project to write each `project_truth.json`.
+3. Run `Step20-Evaluate.py` once all generated PDFs exist.
+
+> **Note:** the published results above reflect the complete 14-review benchmark (2,800 evidence
+> cards). If your local workspace is mid-run (e.g. fewer cards, only some `project_truth.json`
+> files present), reconcile the per-project counts before treating local output as final.
+
+---
+
+## Citation
+
+```bibtex
+@article{muneeb_alrbench_2026,
+  title   = {ALR-Bench: Benchmarking AI-Assisted Scientific Literature Review
+             Reproduction from Full-Text Evidence},
+  author  = {Muneeb, Muhammad and Ascher, David B.},
+  year    = {2026},
+  note    = {Code: https://github.com/MuhammadMuneeb007/ALR-Bench}
+}
+```
+
+---
+
+## Responsible use & licensing
+
+ALR-Bench is an **evaluation and assistance framework**, not a replacement for expert-led
+systematic reviewing. Final review protocols, eligibility decisions, study-quality appraisal,
+evidence interpretation, and manuscript conclusions require human validation.
+
+Full-text retrieval uses available identifiers, open-access sources, and accessible metadata.
+The repository does **not** redistribute copyrighted or publisher-restricted full-text PDFs.
+Users are responsible for complying with database terms of service, publisher policies,
+institutional access rules, and copyright requirements.
