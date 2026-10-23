@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "Please cite ALR-Bench if you use this software."
+title: "ALR-Bench"
+type: software
+authors:
+  - family-names: Muneeb
+    given-names: Muhammad
+  - family-names: Ascher
+    given-names: David B.
+repository-code: "https://github.com/MuhammadMuneeb007/ALR-Bench"
+license: MIT
