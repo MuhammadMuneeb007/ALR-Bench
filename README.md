@@ -62,7 +62,7 @@ supplied to configuration generation, ranking, evidence-card synthesis, or artic
 
 Your figure (adjust the path if it lives elsewhere in the repo):
 
-![ALR-Bench pipeline](Flowchart.svg)
+![ALR-Bench pipeline](Flowchart.jpg)
 
 A native Mermaid version (renders directly on GitHub, no image file required):
 
