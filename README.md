@@ -1,5 +1,5 @@
 # ALR-Bench
-![ALR-Bench nine-stage pipeline](Flowchart.svg)
+![ALR-Bench nine-stage pipeline](Flowchart.jpg)
 
 **Benchmarking AI-Assisted Scientific Literature-Review Reproduction from Full-Text Evidence**
 
